@@ -33,6 +33,10 @@
   - **https**: use https or not (boolean, default true)
   - **user**: proxy user (string, optional)
   - **password**: proxy password (string, optional)
+- **multipart_upload**: configuration to use multipart upload. (optional)
+  - **part_size**: size of each upload a part. (string, defualt: '5g')
+  - **max_threads**: maximum number of threads to upload concurrently. (int, defualt: 4)
+  - **retry_limit**: maximum number of retries for each upload a part. (int, defualt: 3)
 
 - **auth_method**: name of mechanism to authenticate requests (basic, env, instance, profile, properties, anonymous, or session. default: basic)
 

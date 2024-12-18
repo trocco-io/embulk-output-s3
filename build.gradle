@@ -80,6 +80,7 @@ dependencies {
     }
 
     implementation "org.embulk:embulk-util-file:0.1.3"
+    implementation "org.embulk:embulk-util-retryhelper:0.9.0"
 
     // Jackson libraries are once excluded from transitive dependencies of other dependencies, and re-added explicitly here.
     // The versions 2.6.7 are exactly the same with embulk-core's dependency before v0.10.32.
