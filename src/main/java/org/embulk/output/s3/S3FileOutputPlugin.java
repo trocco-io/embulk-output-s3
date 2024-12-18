@@ -362,17 +362,42 @@ public class S3FileOutputPlugin
             int partNumber = 1;
             int totalParts = (int) (fileSize / partSize) + (fileSize % partSize == 0 ? 0 : 1);
             List<Future<PartETag>> partETags = new ArrayList<>();
-            multipartUploadId = client.initiateMultipartUpload(new InitiateMultipartUploadRequest(bucket, key)).getUploadId();
+            multipartUploadId = client.initiateMultipartUpload(
+                    new InitiateMultipartUploadRequest(bucket, key)).getUploadId();
             for (; fileOffset < fileSize; fileOffset += partSize, partNumber++) {
-                partETags.add(submitUploadPart(key, file, fileSize, fileOffset, partSize, partNumber, totalParts, executor));
+                partETags.add(submitUploadPart(
+                        key,
+                        file,
+                        fileSize,
+                        fileOffset,
+                        partSize,
+                        partNumber,
+                        totalParts,
+                        executor));
             }
-            client.completeMultipartUpload(new CompleteMultipartUploadRequest(bucket, key, multipartUploadId, collect(partETags)));
+            client.completeMultipartUpload(
+                    new CompleteMultipartUploadRequest(bucket, key, multipartUploadId, collect(partETags)));
             multipartUploadId = null; // Successfully completed
         }
 
-        private Future<PartETag> submitUploadPart(String key, File file, long fileSize, long fileOffset, long partSize, int partNumber, int totalParts, ExecutorService executor)
+        private Future<PartETag> submitUploadPart(
+                String key,
+                File file,
+                long fileSize,
+                long fileOffset,
+                long partSize,
+                int partNumber,
+                int totalParts,
+                ExecutorService executor)
         {
-            return executor.submit(() -> new UploadPart(key, file, fileSize, fileOffset, partSize, partNumber, totalParts).runInterruptible());
+            return executor.submit(() -> new UploadPart(
+                    key,
+                    file,
+                    fileSize,
+                    fileOffset,
+                    partSize,
+                    partNumber,
+                    totalParts).runInterruptible());
         }
 
         private class UploadPart implements Retryable<PartETag>
@@ -389,7 +414,14 @@ public class S3FileOutputPlugin
             final boolean isLastPart;
             final String md5Digest;
 
-            UploadPart(String key, File file, long fileSize, long fileOffset, long partSize, int partNumber, int totalParts)
+            UploadPart(
+                    String key,
+                    File file,
+                    long fileSize,
+                    long fileOffset,
+                    long partSize,
+                    int partNumber,
+                    int totalParts)
             {
                 this.key = key;
                 this.file = file;
@@ -404,9 +436,15 @@ public class S3FileOutputPlugin
 
             PartETag runInterruptible() throws InterruptedException, RetryGiveupException
             {
-                logger.info("Uploading a part {} / {}. bucket '{}', key '{}', upload id '{}'", partNumber, totalParts, bucket, key, multipartUploadId);
+                logger.info("Uploading a part {} / {}."
+                        + " bucket '{}', key '{}', upload id '{}'",
+                        partNumber, totalParts,
+                        bucket, key, multipartUploadId);
                 PartETag partETag = re.runInterruptible(this);
-                logger.info("Uploaded {} / {} bytes of the file. entity tag '{}'", df.format(fileOffset + partSize), df.format(fileSize), partETag.getETag());
+                logger.info("Uploaded {} / {} bytes of the file."
+                        + " entity tag '{}'",
+                        df.format(fileOffset + partSize), df.format(fileSize),
+                        partETag.getETag());
                 return partETag;
             }
 
@@ -425,17 +463,29 @@ public class S3FileOutputPlugin
             @Override
             public void onRetry(Exception exception, int retryCount, int retryLimit, int retryWait)
             {
-                logger.info("An error occurred while uploading a part {} / {}, will retry {} / {} after {} milliseconds.", partNumber, totalParts, retryCount, retryLimit, df.format(retryWait), exception);
+                logger.info("An error occurred while uploading a part {} / {},"
+                        + " will retry {} / {} after {} milliseconds.",
+                        partNumber, totalParts,
+                        retryCount, retryLimit, df.format(retryWait), exception);
             }
 
             @Override
             public void onGiveup(Exception firstException, Exception lastException)
             {
-                logger.warn("An error occurred while uploading a part {} / {}, give up on retries.", partNumber, totalParts, lastException);
+                logger.warn("An error occurred while uploading a part {} / {},"
+                        + " give up on retries.",
+                        partNumber, totalParts, lastException);
             }
         }
 
-        private PartETag uploadPart(String key, File file, long fileOffset, long partSize, int partNumber, boolean isLastPart, String md5Digest)
+        private PartETag uploadPart(
+                String key,
+                File file,
+                long fileOffset,
+                long partSize,
+                int partNumber,
+                boolean isLastPart,
+                String md5Digest)
         {
             return client.uploadPart(new UploadPartRequest()
                     .withBucketName(bucket)
@@ -446,8 +496,7 @@ public class S3FileOutputPlugin
                     .withPartSize(partSize)
                     .withPartNumber(partNumber)
                     .withLastPart(isLastPart)
-                    .withMD5Digest(md5Digest))
-                    .getPartETag();
+                    .withMD5Digest(md5Digest)).getPartETag();
         }
 
         private void abortMultipartUploadIfNecessary(String key, ExecutorService executor)
@@ -457,11 +506,15 @@ public class S3FileOutputPlugin
             }
             try {
                 abortMultipartUpload(key, executor);
-                logger.info("Aborts a multipart upload. bucket '{}', key '{}', upload id '{}'", bucket, key, multipartUploadId);
+                logger.info("Aborts a multipart upload."
+                        + " bucket '{}', key '{}', upload id '{}'",
+                        bucket, key, multipartUploadId);
             }
             catch (RuntimeException e) {
                 logger.warn("An error occurred while aborting a multipart upload.", e);
-                logger.warn("An incomplete multipart upload may remain. bucket '{}', key '{}', upload id '{}'", bucket, key, multipartUploadId);
+                logger.warn("An incomplete multipart upload may remain."
+                        + " bucket '{}', key '{}', upload id '{}'",
+                        bucket, key, multipartUploadId);
             }
         }
 
@@ -629,7 +682,10 @@ public class S3FileOutputPlugin
         public final int retryLimit;
 
         @JsonCreator
-        public MultipartUpload(@JsonProperty("part_size") String partSize, @JsonProperty("max_threads") Integer maxThreads, @JsonProperty("retry_limit") Integer retryLimit)
+        public MultipartUpload(
+                @JsonProperty("part_size") String partSize,
+                @JsonProperty("max_threads") Integer maxThreads,
+                @JsonProperty("retry_limit") Integer retryLimit)
         {
             this.partSize = parseLong(partSize != null ? partSize : "5g");
             this.maxThreads = maxThreads != null ? maxThreads : 4;
