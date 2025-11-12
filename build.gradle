@@ -39,31 +39,26 @@ dependencies {
     compileOnly "org.embulk:embulk-spi:0.10.37"
     compileOnly "org.embulk:embulk-api:0.10.37"
 
-    implementation("com.amazonaws:aws-java-sdk-s3:1.11.1034") {
+    implementation("software.amazon.awssdk:s3:2.20.26") {
         // Jackson libraries conflict with embulk-core before v0.10.32.
         // They are once excluded here, and re-added explicitly below.
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
-
-        // Joda-Time conflicts with embulk-core before v0.10.30.
-        // It is once excluded here, and re-added explicitly below.
-        exclude group: "joda-time", module: "joda-time"
-
-        // commons-logging api is provided by jcl-over-slf4j below.
-        exclude group: "commons-logging", module: "commons-logging"
     }
 
-    implementation("com.amazonaws:aws-java-sdk-sts:1.11.466") {
+    implementation("software.amazon.awssdk:sts:2.20.26") {
         // They conflict with embulk-core. They are once excluded here,
         // and added explicitly with versions exactly the same with embulk-core:0.10.29.
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
-        exclude group: "joda-time", module: "joda-time"
+    }
 
-        // commons-logging api is provided by jcl-over-slf4j below.
-        exclude group: "commons-logging", module: "commons-logging"
+    implementation("software.amazon.awssdk:apache-client:2.20.26") {
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
+        exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
     }
 
     implementation("org.embulk:embulk-util-aws-credentials:0.4.1") {
@@ -111,27 +106,9 @@ dependencies {
     implementation "joda-time:joda-time:2.9.2"
 
     implementation("org.slf4j:jcl-over-slf4j:1.7.12") {
-        // commons-logging api is provided by jcl-over-slf4j below.
-        exclude group: "commons-logging", module: "commons-logging"
-
         // slf4j-api conflicts with embulk-api. It should be excluded.
         exclude group: "org.slf4j", module: "slf4j-api"
     }
-
-    // Adding dependencies on JAXB explicitly.
-    // JAXB 2.2.11 is chosen here because:
-    // 1. JDK 8's bundled JAXB is 2.2.8. Better with a closer version while we are on Java 8.
-    //    https://javaee.github.io/jaxb-v2/doc/user-guide/ch02.html#a-2-2-8
-    // 2. Neither com.sun.xml.bind:jaxb-core:2.2.8 nor com.sun.xml.bind:jaxb-impl:2.2.8 does not exist on Maven Central.
-    // 3. 2.2.11 looks to be used by the most Java libraries among JAXB 2.2.
-    //    https://mvnrepository.com/artifact/javax.xml.bind/jaxb-api
-    //    https://mvnrepository.com/artifact/com.sun.xml.bind/jaxb-core
-    //    https://mvnrepository.com/artifact/com.sun.xml.bind/jaxb-impl
-    // 4. JAXB 2.2.8 and 2.2.11 look to have the same set of classes.
-    //    Although their internal implementations are a bit different, class loaders would not be confused.
-    implementation "javax.xml.bind:jaxb-api:2.2.11"
-    implementation "com.sun.xml.bind:jaxb-core:2.2.11"
-    implementation "com.sun.xml.bind:jaxb-impl:2.2.11"
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.embulk:embulk-core:0.10.37"

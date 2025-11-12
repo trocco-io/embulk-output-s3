@@ -21,29 +21,38 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.net.URI;
 import java.nio.channels.Channels;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.DecimalFormat;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.IllegalFormatException;
 import java.util.List;
 import java.util.Locale;
 
-import com.amazonaws.Protocol;
 import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.client.builder.AwsClientBuilder;
-import com.amazonaws.retry.PredefinedRetryPolicies;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3ClientBuilder;
-import com.amazonaws.services.s3.model.AbortMultipartUploadRequest;
-import com.amazonaws.services.s3.model.AmazonS3Exception;
-import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
-import com.amazonaws.services.s3.model.InitiateMultipartUploadRequest;
-import com.amazonaws.services.s3.model.PartETag;
-import com.amazonaws.services.s3.model.UploadPartRequest;
-import com.amazonaws.util.Md5Utils;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.apache.ProxyConfiguration;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3ClientBuilder;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
+import software.amazon.awssdk.services.s3.model.CompletedPart;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.UploadPartRequest;
+import software.amazon.awssdk.services.s3.model.UploadPartResponse;
+import software.amazon.awssdk.utils.Md5Utils;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.embulk.util.config.Config;
@@ -67,10 +76,6 @@ import org.embulk.util.retryhelper.RetryGiveupException;
 import org.embulk.util.retryhelper.Retryable;
 import org.slf4j.Logger;
 
-import com.amazonaws.ClientConfiguration;
-import com.amazonaws.services.s3.model.CannedAccessControlList;
-import com.amazonaws.services.s3.model.PutObjectRequest;
-import org.embulk.util.aws.credentials.AwsCredentials;
 import org.embulk.util.aws.credentials.AwsCredentialsTask;
 import org.slf4j.LoggerFactory;
 
@@ -134,7 +139,7 @@ public class S3FileOutputPlugin
 
         @Config("canned_acl")
         @ConfigDefault("null")
-        Optional<CannedAccessControlList> getCannedAccessControlList();
+        Optional<ObjectCannedACL> getCannedAccessControlList();
 
         @Config("region")
         @ConfigDefault("null")
@@ -154,71 +159,75 @@ public class S3FileOutputPlugin
         private final String sequenceFormat;
         private final String fileNameExtension;
         private final String tempPathPrefix;
-        private final Optional<CannedAccessControlList> cannedAccessControlListOptional;
+        private final Optional<ObjectCannedACL> cannedAccessControlListOptional;
         private final MultipartUpload multipartUpload;
 
         private int taskIndex;
         private int fileIndex;
-        private AmazonS3 client;
+        private S3Client client;
         private OutputStream current;
         private Path tempFilePath;
         private String tempPath = null;
         private String multipartUploadId = null;
 
-        private AmazonS3 newS3Client(final PluginTask task)
+        private S3Client newS3Client(final PluginTask task)
         {
             Optional<String> endpoint = task.getEndpoint();
             Optional<String> region = task.getRegion();
 
-            final AmazonS3ClientBuilder builder = AmazonS3ClientBuilder
-                    .standard()
-                    .withCredentials(getCredentialsProvider(task))
-                    .withClientConfiguration(getClientConfiguration(task));
+            final S3ClientBuilder builder = S3Client.builder()
+                    .credentialsProvider(getCredentialsProvider(task))
+                    .httpClientBuilder(getHttpClientBuilder(task));
 
-            // Favor the `endpoint` configuration, then `region`, if both are absent then `s3.amazonaws.com` will be used.
+            // Favor the `endpoint` configuration, then `region`, if both are absent then use default region provider
             if (endpoint.isPresent()) {
                 if (region.isPresent()) {
                     logger.warn("Either configure endpoint or region, " +
                             "if both is specified only the endpoint will be in effect.");
                 }
-                builder.setEndpointConfiguration(new AwsClientBuilder.EndpointConfiguration(endpoint.get(), null));
+                builder.endpointOverride(URI.create(endpoint.get()));
+                // When endpoint is specified, still need a region but it will use the endpoint
+                if (region.isPresent()) {
+                    builder.region(Region.of(region.get()));
+                }
+                else {
+                    builder.region(Region.US_EAST_1);
+                }
             }
             else if (region.isPresent()) {
-                builder.setRegion(region.get());
+                builder.region(Region.of(region.get()));
             }
-            else {
-                // This is to keep the AWS SDK upgrading to 1.11.x to be backward compatible with old configuration.
-                //
-                // On SDK 1.10.x, when neither endpoint nor region is set explicitly, the client's endpoint will be by
-                // default `s3.amazonaws.com`. And for pre-Signature-V4, this will work fine as the bucket's region
-                // will be resolved to the appropriate region on server (AWS) side.
-                //
-                // On SDK 1.11.x, a region will be computed on client side by AwsRegionProvider and the endpoint now will
-                // be region-specific `<region>.s3.amazonaws.com` and might be the wrong one.
-                //
-                // So a default endpoint of `s3.amazonaws.com` when both endpoint and region configs are absent are
-                // necessary to make old configurations won't suddenly break. The side effect is that this will render
-                // AwsRegionProvider useless. And it's worth to note that Signature-V4 won't work with either versions with
-                // no explicit region or endpoint as the region (inferrable from endpoint) are necessary for signing.
-                builder.setEndpointConfiguration(new AwsClientBuilder.EndpointConfiguration("s3.amazonaws.com", null));
-            }
+            // If neither endpoint nor region is specified, don't set region explicitly
+            // This allows the SDK to use the default region provider chain
 
-            builder.withForceGlobalBucketAccessEnabled(true);
+            builder.forcePathStyle(false);
             return builder.build();
         }
 
-        private AWSCredentialsProvider getCredentialsProvider(PluginTask task)
+        private AwsCredentialsProvider getCredentialsProvider(PluginTask task)
         {
-            return AwsCredentials.getAWSCredentialsProvider(task);
+            // Convert AWS SDK v1 credentials provider to v2
+            AWSCredentialsProvider v1Provider = org.embulk.util.aws.credentials.AwsCredentials.getAWSCredentialsProvider(task);
+            return new AwsCredentialsProvider()
+            {
+                @Override
+                public software.amazon.awssdk.auth.credentials.AwsCredentials resolveCredentials()
+                {
+                    com.amazonaws.auth.AWSCredentials v1Creds = v1Provider.getCredentials();
+                    return AwsBasicCredentials.create(
+                        v1Creds.getAWSAccessKeyId(),
+                        v1Creds.getAWSSecretKey()
+                    );
+                }
+            };
         }
 
-        private ClientConfiguration getClientConfiguration(PluginTask task)
+        private ApacheHttpClient.Builder getHttpClientBuilder(PluginTask task)
         {
-            ClientConfiguration clientConfig = new ClientConfiguration();
+            ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder();
 
-            clientConfig.setMaxConnections(50); // SDK default: 50
-            clientConfig.setSocketTimeout(8 * 60 * 1000); // SDK default: 50*1000
-            clientConfig.setRetryPolicy(PredefinedRetryPolicies.NO_RETRY_POLICY);
+            httpClientBuilder.maxConnections(50);
+            httpClientBuilder.socketTimeout(Duration.ofMillis(8 * 60 * 1000));
 
             // set http proxy
             // backward compatibility
@@ -250,34 +259,34 @@ public class S3FileOutputPlugin
             }
 
             if (task.getHttpProxy().isPresent()) {
-                setHttpProxyInAwsClient(clientConfig, task.getHttpProxy().get());
+                setHttpProxyInAwsClient(httpClientBuilder, task.getHttpProxy().get());
             }
 
-            return clientConfig;
+            return httpClientBuilder;
         }
 
-        private void setHttpProxyInAwsClient(ClientConfiguration clientConfig, HttpProxy httpProxy)
+        private void setHttpProxyInAwsClient(ApacheHttpClient.Builder httpClientBuilder, HttpProxy httpProxy)
         {
+            ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
+
             // host
-            clientConfig.setProxyHost(httpProxy.getHost());
-
-            // port
-            if (httpProxy.getPort().isPresent()) {
-                clientConfig.setProxyPort(httpProxy.getPort().get());
-            }
-
-            // https
-            clientConfig.setProtocol(httpProxy.getHttps() ? Protocol.HTTPS : Protocol.HTTP);
+            proxyConfig.endpoint(URI.create(
+                    (httpProxy.getHttps() ? "https://" : "http://") +
+                    httpProxy.getHost() +
+                    (httpProxy.getPort().isPresent() ? ":" + httpProxy.getPort().get() : "")
+            ));
 
             // user
             if (httpProxy.getUser().isPresent()) {
-                clientConfig.setProxyUsername(httpProxy.getUser().get());
+                proxyConfig.username(httpProxy.getUser().get());
             }
 
             // password
             if (httpProxy.getPassword().isPresent()) {
-                clientConfig.setProxyPassword(httpProxy.getPassword().get());
+                proxyConfig.password(httpProxy.getPassword().get());
             }
+
+            httpClientBuilder.proxyConfiguration(proxyConfig.build());
         }
 
         public S3FileOutput(PluginTask task, int taskIndex)
@@ -361,9 +370,18 @@ public class S3FileOutputPlugin
             long partSize = multipartUpload.partSize;
             int partNumber = 1;
             int totalParts = (int) (fileSize / partSize) + (fileSize % partSize == 0 ? 0 : 1);
-            List<Future<PartETag>> partETags = new ArrayList<>();
-            multipartUploadId = client.initiateMultipartUpload(
-                    new InitiateMultipartUploadRequest(bucket, key)).getUploadId();
+            List<Future<CompletedPart>> partETags = new ArrayList<>();
+
+            CreateMultipartUploadRequest.Builder createRequestBuilder = CreateMultipartUploadRequest.builder()
+                    .bucket(bucket)
+                    .key(key);
+
+            if (cannedAccessControlListOptional.isPresent()) {
+                createRequestBuilder.acl(cannedAccessControlListOptional.get());
+            }
+
+            multipartUploadId = client.createMultipartUpload(createRequestBuilder.build()).uploadId();
+
             for (; fileOffset < fileSize; fileOffset += partSize, partNumber++) {
                 partETags.add(submitUploadPart(
                         key,
@@ -375,12 +393,22 @@ public class S3FileOutputPlugin
                         totalParts,
                         executor));
             }
+
+            List<CompletedPart> completedParts = collect(partETags);
+
             client.completeMultipartUpload(
-                    new CompleteMultipartUploadRequest(bucket, key, multipartUploadId, collect(partETags)));
+                    CompleteMultipartUploadRequest.builder()
+                            .bucket(bucket)
+                            .key(key)
+                            .uploadId(multipartUploadId)
+                            .multipartUpload(CompletedMultipartUpload.builder()
+                                    .parts(completedParts)
+                                    .build())
+                            .build());
             multipartUploadId = null; // Successfully completed
         }
 
-        private Future<PartETag> submitUploadPart(
+        private Future<CompletedPart> submitUploadPart(
                 String key,
                 File file,
                 long fileSize,
@@ -400,7 +428,7 @@ public class S3FileOutputPlugin
                     totalParts).runInterruptible());
         }
 
-        private class UploadPart implements Retryable<PartETag>
+        private class UploadPart implements Retryable<CompletedPart>
         {
             final RetryExecutor re = RetryExecutor.builder().withRetryLimit(multipartUpload.retryLimit).build();
             final DecimalFormat df = new DecimalFormat("#,###"); // Not thread safe
@@ -434,30 +462,30 @@ public class S3FileOutputPlugin
                 md5Digest = md5AsBase64(file, fileOffset, partSize);
             }
 
-            PartETag runInterruptible() throws InterruptedException, RetryGiveupException
+            CompletedPart runInterruptible() throws InterruptedException, RetryGiveupException
             {
                 logger.info("Uploading a part {} / {}."
                         + " bucket '{}', key '{}', upload id '{}'",
                         partNumber, totalParts,
                         bucket, key, multipartUploadId);
-                PartETag partETag = re.runInterruptible(this);
+                CompletedPart completedPart = re.runInterruptible(this);
                 logger.info("Uploaded {} / {} bytes of the file."
                         + " entity tag '{}'",
                         df.format(fileOffset + partSize), df.format(fileSize),
-                        partETag.getETag());
-                return partETag;
+                        completedPart.eTag());
+                return completedPart;
             }
 
             @Override
-            public PartETag call()
+            public CompletedPart call()
             {
-                return uploadPart(key, file, fileOffset, partSize, partNumber, isLastPart, md5Digest);
+                return uploadPart(key, file, fileOffset, partSize, partNumber, md5Digest);
             }
 
             @Override
             public boolean isRetryableException(Exception exception)
             {
-                return exception instanceof AmazonS3Exception;
+                return exception instanceof S3Exception;
             }
 
             @Override
@@ -478,25 +506,40 @@ public class S3FileOutputPlugin
             }
         }
 
-        private PartETag uploadPart(
+        private CompletedPart uploadPart(
                 String key,
                 File file,
                 long fileOffset,
                 long partSize,
                 int partNumber,
-                boolean isLastPart,
                 String md5Digest)
         {
-            return client.uploadPart(new UploadPartRequest()
-                    .withBucketName(bucket)
-                    .withKey(key)
-                    .withUploadId(multipartUploadId)
-                    .withFile(file)
-                    .withFileOffset(fileOffset)
-                    .withPartSize(partSize)
-                    .withPartNumber(partNumber)
-                    .withLastPart(isLastPart)
-                    .withMD5Digest(md5Digest)).getPartETag();
+            try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+                raf.seek(fileOffset);
+                byte[] buffer = new byte[(int) partSize];
+                int bytesRead = raf.read(buffer);
+
+                byte[] partData = new byte[bytesRead];
+                System.arraycopy(buffer, 0, partData, 0, bytesRead);
+
+                UploadPartResponse response = client.uploadPart(
+                        UploadPartRequest.builder()
+                                .bucket(bucket)
+                                .key(key)
+                                .uploadId(multipartUploadId)
+                                .partNumber(partNumber)
+                                .contentMD5(md5Digest)
+                                .build(),
+                        RequestBody.fromBytes(partData));
+
+                return CompletedPart.builder()
+                        .partNumber(partNumber)
+                        .eTag(response.eTag())
+                        .build();
+            }
+            catch (IOException e) {
+                throw new RuntimeException(e);
+            }
         }
 
         private void abortMultipartUploadIfNecessary(String key, ExecutorService executor)
@@ -521,16 +564,25 @@ public class S3FileOutputPlugin
         private void abortMultipartUpload(String key, ExecutorService executor)
         {
             executor.shutdownNow(); // Attempts to terminate if possible
-            client.abortMultipartUpload(new AbortMultipartUploadRequest(bucket, key, multipartUploadId));
+            client.abortMultipartUpload(
+                    AbortMultipartUploadRequest.builder()
+                            .bucket(bucket)
+                            .key(key)
+                            .uploadId(multipartUploadId)
+                            .build());
         }
 
         private void putFile(Path from, String key)
         {
-            PutObjectRequest request = new PutObjectRequest(bucket, key, from.toFile());
+            PutObjectRequest.Builder requestBuilder = PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key);
+
             if (cannedAccessControlListOptional.isPresent()) {
-                request.withCannedAcl(cannedAccessControlListOptional.get());
+                requestBuilder.acl(cannedAccessControlListOptional.get());
             }
-            client.putObject(request);
+
+            client.putObject(requestBuilder.build(), RequestBody.fromFile(from));
         }
 
         private void closeCurrent()
@@ -604,6 +656,9 @@ public class S3FileOutputPlugin
         public void close()
         {
             closeCurrent();
+            if (client != null) {
+                client.close();
+            }
         }
 
         @Override
