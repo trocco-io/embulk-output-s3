@@ -33,8 +33,6 @@ import java.util.IllegalFormatException;
 import java.util.List;
 import java.util.Locale;
 
-import com.amazonaws.auth.AWSCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -66,7 +64,6 @@ import org.embulk.util.config.Task;
 import org.embulk.config.TaskReport;
 import org.embulk.config.TaskSource;
 import org.embulk.spi.Buffer;
-import org.embulk.spi.Exec;
 import org.embulk.spi.FileOutput;
 import org.embulk.spi.FileOutputPlugin;
 import org.embulk.spi.TransactionalFileOutput;
@@ -179,26 +176,13 @@ public class S3FileOutputPlugin
                     .credentialsProvider(getCredentialsProvider(task))
                     .httpClientBuilder(getHttpClientBuilder(task));
 
-            // Favor the `endpoint` configuration, then `region`, if both are absent then use default region provider
-            if (endpoint.isPresent()) {
-                if (region.isPresent()) {
-                    logger.warn("Either configure endpoint or region, " +
-                            "if both is specified only the endpoint will be in effect.");
-                }
-                builder.endpointOverride(URI.create(endpoint.get()));
-                // When endpoint is specified, still need a region but it will use the endpoint
-                if (region.isPresent()) {
-                    builder.region(Region.of(region.get()));
-                }
-                else {
-                    builder.region(Region.US_EAST_1);
-                }
-            }
-            else if (region.isPresent()) {
+            if (region.isPresent()) {
                 builder.region(Region.of(region.get()));
             }
-            // If neither endpoint nor region is specified, don't set region explicitly
-            // This allows the SDK to use the default region provider chain
+
+            if (endpoint.isPresent()) {
+                builder.endpointOverride(URI.create(endpoint.get()));
+            }
 
             builder.forcePathStyle(false);
             return builder.build();
@@ -206,20 +190,7 @@ public class S3FileOutputPlugin
 
         private AwsCredentialsProvider getCredentialsProvider(PluginTask task)
         {
-            // Convert AWS SDK v1 credentials provider to v2
-            AWSCredentialsProvider v1Provider = org.embulk.util.aws.credentials.AwsCredentials.getAWSCredentialsProvider(task);
-            return new AwsCredentialsProvider()
-            {
-                @Override
-                public software.amazon.awssdk.auth.credentials.AwsCredentials resolveCredentials()
-                {
-                    com.amazonaws.auth.AWSCredentials v1Creds = v1Provider.getCredentials();
-                    return AwsBasicCredentials.create(
-                        v1Creds.getAWSAccessKeyId(),
-                        v1Creds.getAWSSecretKey()
-                    );
-                }
-            };
+            return AwsCredentialsProviderV2.getAwsCredentialsProvider(task);
         }
 
         private ApacheHttpClient.Builder getHttpClientBuilder(PluginTask task)
