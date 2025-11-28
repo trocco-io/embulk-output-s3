@@ -136,7 +136,7 @@ public class S3FileOutputPlugin
 
         @Config("canned_acl")
         @ConfigDefault("null")
-        Optional<ObjectCannedACL> getCannedAccessControlList();
+        Optional<String> getCannedAccessControlList();
 
         @Config("region")
         @ConfigDefault("null")
@@ -272,7 +272,7 @@ public class S3FileOutputPlugin
             if (task.getTempPath().isPresent()) {
                 this.tempPath = task.getTempPath().get();
             }
-            this.cannedAccessControlListOptional = task.getCannedAccessControlList();
+            this.cannedAccessControlListOptional = task.getCannedAccessControlList().map(S3FileOutputPlugin::parseCannedAcl);
             this.multipartUpload = task.getMultipartUpload().orElse(null);
         }
 
@@ -727,6 +727,80 @@ public class S3FileOutputPlugin
             final long value = Long.parseLong(valueWithUnit.replaceFirst("[^0-9]*$", ""));
             final String unit = valueWithUnit.replaceFirst("^[0-9]*", "").toLowerCase();
             return value * (unit.equals("g") ? G : unit.equals("m") ? M : unit.equals("k") ? K : 1);
+        }
+    }
+
+    /**
+     * Converts a canned ACL string to ObjectCannedACL enum.
+     * Supports both legacy format (e.g., "Private", "PublicRead") and AWS SDK v2 format (e.g., "private", "public-read").
+     * Returns null if the input is null or empty.
+     *
+     * @param cannedAcl the canned ACL string (can be null or empty)
+     * @return the corresponding ObjectCannedACL enum value, or null if input is null/empty
+     * @throws ConfigException if the canned ACL string is invalid
+     */
+    private static ObjectCannedACL parseCannedAcl(String cannedAcl)
+    {
+        if (cannedAcl == null || cannedAcl.isEmpty()) {
+            return null;
+        }
+
+        // First, try to convert from legacy format to AWS SDK v2 format
+        // AWS SDK v1 used camelCase (e.g., "Private", "PublicRead")
+        // AWS SDK v2 uses lowercase with hyphens (e.g., "private", "public-read")
+        String converted = convertLegacyFormat(cannedAcl);
+
+        // Now try to parse the converted value
+        try {
+            ObjectCannedACL result = ObjectCannedACL.fromValue(converted);
+            if (result == null) {
+                logger.error("ObjectCannedACL.fromValue('{}') returned null", converted);
+                throw new ConfigException(
+                        String.format("Invalid canned_acl value: '%s'. Valid values are: " +
+                                "Private, PublicRead, PublicReadWrite, AuthenticatedRead, " +
+                                "AwsExecRead, BucketOwnerRead, BucketOwnerFullControl, " +
+                                "or AWS SDK v2 format (private, public-read, etc.)", cannedAcl));
+            }
+            return result;
+        }
+        catch (IllegalArgumentException e) {
+            logger.error("Failed to parse canned_acl value '{}' (converted to '{}')", cannedAcl, converted, e);
+            throw new ConfigException(
+                    String.format("Invalid canned_acl value: '%s'. Valid values are: " +
+                            "Private, PublicRead, PublicReadWrite, AuthenticatedRead, " +
+                            "AwsExecRead, BucketOwnerRead, BucketOwnerFullControl, " +
+                            "or AWS SDK v2 format (private, public-read, etc.)", cannedAcl));
+        }
+    }
+
+    /**
+     * Converts legacy canned ACL format to AWS SDK v2 format.
+     *
+     * @param legacyFormat the legacy format string (e.g., "Private", "PublicRead")
+     * @return the AWS SDK v2 format string (e.g., "private", "public-read")
+     */
+    private static String convertLegacyFormat(String legacyFormat)
+    {
+        switch (legacyFormat) {
+            case "Private":
+                return "private";
+            case "PublicRead":
+                return "public-read";
+            case "PublicReadWrite":
+                return "public-read-write";
+            case "AuthenticatedRead":
+                return "authenticated-read";
+            case "AwsExecRead":
+                return "aws-exec-read";
+            case "BucketOwnerRead":
+                return "bucket-owner-read";
+            case "BucketOwnerFullControl":
+                return "bucket-owner-full-control";
+            case "LogDeliveryWrite":
+                return "log-delivery-write";
+            default:
+                // Return as-is if no match, will be handled by ObjectCannedACL.fromValue
+                return legacyFormat;
         }
     }
 
