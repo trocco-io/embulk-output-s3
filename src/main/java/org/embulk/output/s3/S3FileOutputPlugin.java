@@ -81,6 +81,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class S3FileOutputPlugin
@@ -329,7 +330,7 @@ public class S3FileOutputPlugin
                 executeMultipartUpload(from, key, executor);
             }
             finally {
-                abortMultipartUploadIfNecessary(key, executor);
+                shutdownExecutor(executor, key);
             }
         }
 
@@ -513,22 +514,40 @@ public class S3FileOutputPlugin
             }
         }
 
-        private void abortMultipartUploadIfNecessary(String key, ExecutorService executor)
+        private void shutdownExecutor(ExecutorService executor, String key)
         {
-            if (multipartUploadId == null) { // Successfully completed
-                return;
+            if (multipartUploadId != null) {
+                // アップロード失敗時: 即座に終了を試みる
+                try {
+                    abortMultipartUpload(key, executor);
+                    logger.info("Aborted multipart upload and shut down executor."
+                                    + " bucket '{}', key '{}', upload id '{}'",
+                            bucket, key, multipartUploadId);
+                }
+                catch (RuntimeException e) {
+                    logger.warn("An error occurred while aborting a multipart upload.", e);
+                    logger.warn("An incomplete multipart upload may remain."
+                                    + " bucket '{}', key '{}', upload id '{}'",
+                            bucket, key, multipartUploadId);
+                }
             }
-            try {
-                abortMultipartUpload(key, executor);
-                logger.info("Aborts a multipart upload."
-                        + " bucket '{}', key '{}', upload id '{}'",
-                        bucket, key, multipartUploadId);
-            }
-            catch (RuntimeException e) {
-                logger.warn("An error occurred while aborting a multipart upload.", e);
-                logger.warn("An incomplete multipart upload may remain."
-                        + " bucket '{}', key '{}', upload id '{}'",
-                        bucket, key, multipartUploadId);
+            else {
+                // アップロード成功時: 正常にシャットダウン
+                executor.shutdown();
+                try {
+                    if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                        logger.warn("Executor did not terminate in time, forcing shutdown");
+                        executor.shutdownNow();
+                        if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                            logger.error("Executor did not terminate after forced shutdown");
+                        }
+                    }
+                }
+                catch (InterruptedException e) {
+                    logger.warn("Interrupted while waiting for executor termination", e);
+                    executor.shutdownNow();
+                    Thread.currentThread().interrupt();
+                }
             }
         }
 
