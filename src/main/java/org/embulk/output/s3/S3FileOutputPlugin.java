@@ -275,6 +275,13 @@ public class S3FileOutputPlugin
             }
             this.cannedAccessControlListOptional = task.getCannedAccessControlList().map(S3FileOutputPlugin::parseCannedAcl);
             this.multipartUpload = task.getMultipartUpload().orElse(null);
+            if (this.multipartUpload != null) {
+                logger.info("Multipart upload configuration: partSize={} bytes ({} MB), maxThreads={}, retryLimit={}",
+                        this.multipartUpload.partSize,
+                        this.multipartUpload.partSize / (1024 * 1024),
+                        this.multipartUpload.maxThreads,
+                        this.multipartUpload.retryLimit);
+            }
         }
 
         private static Path newTempFile(String tmpDir, String prefix)
@@ -427,11 +434,18 @@ public class S3FileOutputPlugin
                 this.file = file;
                 this.fileSize = fileSize;
                 this.fileOffset = fileOffset;
+                long originalPartSize = partSize;
                 this.partSize = Math.min(partSize, fileSize - fileOffset);
                 this.partNumber = partNumber;
                 this.totalParts = totalParts;
                 isLastPart = partNumber >= totalParts;
                 md5Digest = md5AsBase64(file, fileOffset, partSize);
+
+                logger.debug("UploadPart constructor: partNumber={}, originalPartSize={} bytes ({} MB), " +
+                        "adjustedPartSize={} bytes ({} MB), fileOffset={}, fileSize={}",
+                        partNumber, originalPartSize, originalPartSize / (1024 * 1024),
+                        this.partSize, this.partSize / (1024 * 1024),
+                        fileOffset, fileSize);
             }
 
             CompletedPart runInterruptible() throws InterruptedException, RetryGiveupException
@@ -488,11 +502,22 @@ public class S3FileOutputPlugin
         {
             try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
                 raf.seek(fileOffset);
+
+                logger.debug("uploadPart: Allocating buffer array of {} bytes ({} MB) for part {}",
+                        partSize, partSize / (1024 * 1024), partNumber);
                 byte[] buffer = new byte[(int) partSize];
                 int bytesRead = raf.read(buffer);
 
+                logger.debug("uploadPart: Read {} bytes, allocating partData array of {} bytes ({} MB) for part {}",
+                        bytesRead, bytesRead, bytesRead / (1024 * 1024), partNumber);
                 byte[] partData = new byte[bytesRead];
                 System.arraycopy(buffer, 0, partData, 0, bytesRead);
+
+                logger.debug("uploadPart: Total memory allocated for part {}: {} bytes ({} MB) [buffer] + {} bytes ({} MB) [partData] = {} bytes ({} MB)",
+                        partNumber,
+                        partSize, partSize / (1024 * 1024),
+                        bytesRead, bytesRead / (1024 * 1024),
+                        partSize + bytesRead, (partSize + bytesRead) / (1024 * 1024));
 
                 UploadPartResponse response = client.uploadPart(
                         UploadPartRequest.builder()
