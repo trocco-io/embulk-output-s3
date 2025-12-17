@@ -275,13 +275,6 @@ public class S3FileOutputPlugin
             }
             this.cannedAccessControlListOptional = task.getCannedAccessControlList().map(S3FileOutputPlugin::parseCannedAcl);
             this.multipartUpload = task.getMultipartUpload().orElse(null);
-            if (this.multipartUpload != null) {
-                logger.info("Multipart upload configuration: partSize={} bytes ({} MB), maxThreads={}, retryLimit={}",
-                        this.multipartUpload.partSize,
-                        this.multipartUpload.partSize / (1024 * 1024),
-                        this.multipartUpload.maxThreads,
-                        this.multipartUpload.retryLimit);
-            }
         }
 
         private static Path newTempFile(String tmpDir, String prefix)
@@ -434,18 +427,11 @@ public class S3FileOutputPlugin
                 this.file = file;
                 this.fileSize = fileSize;
                 this.fileOffset = fileOffset;
-                long originalPartSize = partSize;
                 this.partSize = Math.min(partSize, fileSize - fileOffset);
                 this.partNumber = partNumber;
                 this.totalParts = totalParts;
                 isLastPart = partNumber >= totalParts;
                 md5Digest = md5AsBase64(file, fileOffset, partSize);
-
-                logger.debug("UploadPart constructor: partNumber={}, originalPartSize={} bytes ({} MB), " +
-                        "adjustedPartSize={} bytes ({} MB), fileOffset={}, fileSize={}",
-                        partNumber, originalPartSize, originalPartSize / (1024 * 1024),
-                        this.partSize, this.partSize / (1024 * 1024),
-                        fileOffset, fileSize);
             }
 
             CompletedPart runInterruptible() throws InterruptedException, RetryGiveupException
