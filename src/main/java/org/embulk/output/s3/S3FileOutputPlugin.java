@@ -502,37 +502,22 @@ public class S3FileOutputPlugin
         {
             try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
                 raf.seek(fileOffset);
+                try (FilePartInputStream inputStream = new FilePartInputStream(raf, partSize)) {
+                    UploadPartResponse response = client.uploadPart(
+                            UploadPartRequest.builder()
+                                    .bucket(bucket)
+                                    .key(key)
+                                    .uploadId(multipartUploadId)
+                                    .partNumber(partNumber)
+                                    .contentMD5(md5Digest)
+                                    .build(),
+                            RequestBody.fromInputStream(inputStream, partSize));
 
-                logger.debug("uploadPart: Allocating buffer array of {} bytes ({} MB) for part {}",
-                        partSize, partSize / (1024 * 1024), partNumber);
-                byte[] buffer = new byte[(int) partSize];
-                int bytesRead = raf.read(buffer);
-
-                logger.debug("uploadPart: Read {} bytes, allocating partData array of {} bytes ({} MB) for part {}",
-                        bytesRead, bytesRead, bytesRead / (1024 * 1024), partNumber);
-                byte[] partData = new byte[bytesRead];
-                System.arraycopy(buffer, 0, partData, 0, bytesRead);
-
-                logger.debug("uploadPart: Total memory allocated for part {}: {} bytes ({} MB) [buffer] + {} bytes ({} MB) [partData] = {} bytes ({} MB)",
-                        partNumber,
-                        partSize, partSize / (1024 * 1024),
-                        bytesRead, bytesRead / (1024 * 1024),
-                        partSize + bytesRead, (partSize + bytesRead) / (1024 * 1024));
-
-                UploadPartResponse response = client.uploadPart(
-                        UploadPartRequest.builder()
-                                .bucket(bucket)
-                                .key(key)
-                                .uploadId(multipartUploadId)
-                                .partNumber(partNumber)
-                                .contentMD5(md5Digest)
-                                .build(),
-                        RequestBody.fromBytes(partData));
-
-                return CompletedPart.builder()
-                        .partNumber(partNumber)
-                        .eTag(response.eTag())
-                        .build();
+                    return CompletedPart.builder()
+                            .partNumber(partNumber)
+                            .eTag(response.eTag())
+                            .build();
+                }
             }
             catch (IOException e) {
                 throw new RuntimeException(e);
