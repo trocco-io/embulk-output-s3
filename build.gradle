@@ -39,7 +39,7 @@ dependencies {
     compileOnly "org.embulk:embulk-spi:0.10.37"
     compileOnly "org.embulk:embulk-api:0.10.37"
 
-    implementation("software.amazon.awssdk:s3:2.20.26") {
+    implementation("software.amazon.awssdk:s3:2.41.22") {
         // Jackson libraries conflict with embulk-core before v0.10.32.
         // They are once excluded here, and re-added explicitly below.
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
@@ -47,7 +47,7 @@ dependencies {
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
     }
 
-    implementation("software.amazon.awssdk:sts:2.20.26") {
+    implementation("software.amazon.awssdk:sts:2.41.22") {
         // They conflict with embulk-core. They are once excluded here,
         // and added explicitly with versions exactly the same with embulk-core:0.10.29.
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
@@ -55,7 +55,7 @@ dependencies {
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
     }
 
-    implementation("software.amazon.awssdk:apache-client:2.20.26") {
+    implementation("software.amazon.awssdk:apache-client:2.41.22") {
         exclude group: "com.fasterxml.jackson.core", module: "jackson-annotations"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-core"
         exclude group: "com.fasterxml.jackson.core", module: "jackson-databind"
